@@ -1,67 +1,98 @@
 # Linux System Health Checker (LSHC)
 
-Bash의 기동성과 Python의 분석력을 결합한 운영 서버용 지능형 상태 점검 도구입니다. 단순한 임계치 판단을 넘어, 통계적 추세 분석을 통해 잠재적 장애 요소를 사전에 탐지합니다.
-
-## 🚀 Key Features
-
-### 1. Hybrid Multi-Layer Detection (Bash)
-- **Zero-Dependency**: 외부 패키지 설치 없이 표준 리눅스 명령어(`top`, `df`, `ss`, `procfs`)만으로 로우 데이터를 수집합니다.
-- **Modular Architecture**: 자원(Resource), 네트워크(Network), 보안(Security) 수집 로직이 분리되어 있어 확장이 용이합니다.
-- **Container Awareness**: cgroup v1/v2를 직접 조회하여 컨테이너 환경 내에서도 정확한 메모리 점유율을 계산합니다.
-
-### 2. Intelligent Data Analysis (Python)
-- **Statistical Trend Analysis**: 최근 5회 실행 이력을 기반으로 이동평균(MA) 및 표준편차(SD)를 계산하여 `SPIKE`(급변) 및 `TREND_UP`(지속 상승) 패턴을 탐지합니다.
-- **Weighted Health Scoring**: 각 지표의 중요도(Weight)에 따른 페널티 차감 방식을 사용하여 시스템의 종합적인 건전성을 0-100 점수로 산출합니다.
-- **Actionable Reports**: 장애 탐지 시 즉시 조치 가능한 명령어를 제안하여 운영자의 MTTR(Mean Time To Repair)을 단축시킵니다.
-
-### 3. Comprehensive Audit Logging
-모든 실행 이력과 시스템 변경 시도는 감사 로그(Audit Log)로 기록되어 추적성을 보장합니다.
-- **위치**: `logs/audit.log`
-- **기록 내용**: 실행 시각, 실행 유저, 적용된 서버 역할(`--role`), 자동 복구(`--fix`) 실행 여부 및 결과.
-- **활용**: 인프라 변경 이력 관리 및 장애 발생 시의 사후 분석(Post-mortem) 자료로 활용됩니다.
+Bash의 기동성과 Python의 분석력을 결합한 운영 서버용 지능형 상태 점검 도구입니다. 단순한 임계치 판단을 넘어, 통계적 추세 분석을 통해 잠재적 장애 요소를 사전에 탐지하고 운영 자동화(CI/CD)를 지원합니다.
 
 ---
 
 ## 🛠 Architecture & Pipeline
 
-LSHC는 **수집(Collection) -> 분석(Analysis) -> 대응(Response)**의 3단계 파이프라인으로 동작합니다.
+본 시스템은 **데이터 수집(Collector)**과 **지능형 분석(Analyzer)** 레이어가 분리된 하이브리드 아키텍처를 채택하고 있습니다.
 
-1.  **Collection (Bash Shell)**: 
-    - `modules/*.sh` 모듈들이 병렬적으로 데이터를 수집합니다.
-    - 수집된 데이터는 JSON Payload로 조립되어 Python 엔진의 표준 입력(stdin)으로 전달됩니다.
-2.  **Analysis (Python 3)**:
-    - 수집된 원시 데이터를 가중치 모델과 통계 모델에 대입합니다.
-    - `reports/history/` 디렉토리의 과거 데이터를 참조하여 현재 상태의 이상 여부를 판별합니다.
-3.  **Response (CLI/JSON)**:
-    - 표준 출력(stdout)을 통해 컬러화된 리포트를 출력합니다.
-    - 자동화 도구 연동을 위해 표준화된 JSON 리포트를 생성하며, 상태에 따른 Exit Code를 반환합니다.
+1.  **Collector Layer (Bash)**: 외부 패키지 의존성 없이 표준 리눅스 명령어와 `procfs`를 직접 조회하여 로우 데이터를 수집합니다. (기동성 및 범용성 확보)
+2.  **Analyzer Layer (Python)**: 수집된 JSON 페이로드를 통계 모델(이동평균, 표준편차)에 대입하여 점수화 및 추세 분석을 수행합니다. (정밀 분석 및 유지보수성 확보)
+3.  **Communication**: 두 레이어는 표준 입력(stdin) 파이프라인을 통해 JSON 데이터를 교환하며, 최종 결과는 OS Exit Code를 통해 시스템에 전달됩니다.
+
+---
+
+## 🚀 Key Features (Detailed)
+
+### 1. 지능형 추세 분석 (Trend Analysis)
+단발적인 수치가 아닌 최근 5회 실행 이력을 통계적으로 분석합니다.
+- **SPIKE 탐지**: 이동평균(MA) 대비 20% 이상 급상승하거나 2 표준편차(σ)를 초과하는 이상값(Outlier)을 감지합니다.
+- **TREND_UP 탐지**: 지표가 지속적으로 상승하는 선형적 증가 추세를 감지하여 용량 고갈 리스크를 사전에 경고합니다.
+
+### 2. 환경 적응형 리소스 수집
+- **Container Awareness**: 컨테이너 환경(`cgroup v1/v2`)과 베어메탈 환경을 자동 감지하여 정확한 메모리 점유율을 계산합니다.
+- **Load Calibration**: 단순 Load Average 값이 아닌 CPU 코어 수 대비 비율을 계산하여 서버 사양에 상관없는 객관적 지표를 산출합니다.
+
+### 3. 감사 로그 및 추적성 (Audit Logging)
+모든 시스템 점검 행위와 자동 복구(`--fix`) 시도는 감사 로그로 기록됩니다.
+- **로그 위치**: `logs/audit.log`
+- **기록 데이터**: `[Timestamp] [Action] | user=[User] | role=[Role] | status=[Success/Fail]`
+- **운영적 가치**: 누가 언제 어떤 점검을 수행했는지, 자동 복구로 인해 어떤 설정이 변경되었는지에 대한 투명한 이력을 제공합니다.
+
+---
+
+## 📂 Project Structure
+
+```
+health-check/
+├── health-check.sh          # 메인 진입점 (CLI 라우터)
+├── modules/                 # [Bash] 수집 모듈 (Resource, Network, Security)
+├── lib/                     # [Bash] 공통 라이브러리 (Bootstrap, Utils)
+├── analyzer/                # [Python] 분석 엔진 (Score, Trend, Reporter)
+├── config/                  # 설정 파일 (default.conf, services.txt)
+├── reports/history/         # 실행 이력 JSON 데이터 (최근 5회)
+└── logs/                    # 실행 및 변경 이력 감사 로그
+```
 
 ---
 
 ## 🚦 CI/CD Integration (Exit Codes)
 
-이 도구는 자동화된 파이프라인 내에서 의사결정 도구로 활용할 수 있도록 표준 Exit Code를 엄격히 준수합니다.
+LSHC는 자동화된 파이프라인의 **Quality Gate** 역할을 수행할 수 있도록 표준 Exit Code를 반환합니다.
 
-| Code | Status | Pipeline Action |
+| Exit Code | Status | Pipeline Meaning |
 | :--- | :--- | :--- |
-| **0** | **OK** | 배포 계속 진행 (Normal) |
-| **1** | **WARNING** | 알림 발송 후 진행 (Potential Risk) |
-| **2** | **CRITICAL** | **배포 중단 및 롤백 트리거 (Failure)** |
-| **3** | **EMERGENCY** | 즉각적인 수동 개입 필요 (Action Failed) |
+| **0** | **OK** | 모든 지표 정상. 배포/작업 진행 가능. |
+| **1** | **WARNING** | 잠재적 리스크 존재. 알림 발송 권장. |
+| **2** | **CRITICAL** | **장애 상태. 파이프라인 중단 및 롤백 트리거.** |
+| **3** | **EMERGENCY** | 시스템 치명적 오류 또는 자동 복구 실패. |
 
 ---
 
-## 💻 Quick Start
+## 💻 Installation & Usage
 
+### 1. Requirements
+- **OS**: Linux (Ubuntu, Debian, Rocky, RHEL, CentOS 등)
+- **Runtime**: Bash 4.0+, Python 3.4+ (표준 라이브러리만 사용)
+
+### 2. Usage
 ```bash
-# 레포지토리 클론 및 실행 권한 부여
-git clone https://github.com/nangman-infra/linux-health-checker.git
-cd linux-health-checker
 chmod +x health-check.sh
 
 # 기본 점검 실행
 ./health-check.sh run
 
-# JSON 리포트 출력 (모니터링 시스템 연동 시)
+# 특정 역할(DB) 기반 점검 및 자동 복구 시뮬레이션
+sudo ./health-check.sh run --role db --fix --dry-run
+
+# 외부 모니터링 시스템 연동용 JSON 출력
 ./health-check.sh run --json
+```
+
+---
+
+## 🧪 장애 시뮬레이션 테스트 (Verification)
+
+`stress-ng`를 사용하여 시스템 장애 상황에서의 탐지 능력을 검증할 수 있습니다.
+
+```bash
+# CPU 과부하 상황 (SPIKE 탐지 테스트)
+stress-ng --cpu $(nproc) --timeout 60s &
+sleep 3 && ./health-check.sh run
+
+# I/O Wait 상황 (Load Average 누적 탐지 테스트)
+stress-ng --io 4 --hdd 1 --timeout 60s &
+sleep 3 && ./health-check.sh run
 ```
