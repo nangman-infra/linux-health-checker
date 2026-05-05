@@ -113,7 +113,7 @@ sudo ./health-check.sh run
 # DB 서버 기준으로 점검 (임계치가 달라짐)
 ./health-check.sh run --role db
 
-# 보안# 6. 자동 복구 시뮬레이션 (실제 변경 없음)
+# 6. 자동 복구 시뮬레이션 (실제 변경 없음)
 sudo ./health-check.sh run --fix --dry-run
 ```
 
