@@ -43,11 +43,12 @@ source "${SCRIPT_DIR}/lib/bootstrap.sh"
 # ── 기본값 초기화 ───────────────────────────────────────────
 # 모든 플래그는 여기서 초기화합니다. 나중에 --config 오버라이드도 허용합니다.
 CONFIG_FILE="${SCRIPT_DIR}/config/default.conf"
-ROLE="default"       # 서버 역할: default | web | db | batch
-FIX_MODE=false       # --fix: 안전한 항목에 한해 자동 조치
-JSON_MODE=false      # --json: stdout으로 JSON 출력 (CI/CD, 모니터링 시스템 연동)
-DRY_RUN=false        # --dry-run: Fix 시뮬레이션만, 실제 변경 없음
-TARGET_FILE=""       # --targets <file>: 다중 서버 대상 파일
+ROLE="default"        # 서버 역할: default | web | db | cache | batch | proxy | storage | ci
+ROLE_EXPLICIT=false   # --role 로 명시적으로 지정됐는지 여부
+FIX_MODE=false        # --fix: 안전한 항목에 한해 자동 조치
+JSON_MODE=false       # --json: stdout으로 JSON 출력 (CI/CD, 모니터링 시스템 연동)
+DRY_RUN=false         # --dry-run: Fix 시뮬레이션만, 실제 변경 없음
+TARGET_FILE=""        # --targets <file>: 다중 서버 대상 파일
 
 
 # ────────────────────────────────────────────────────────────
@@ -60,6 +61,20 @@ _load_config() {
     else
         log_err "설정 파일을 찾을 수 없습니다: $CONFIG_FILE"
         exit 1
+    fi
+
+    # 역할별 오버라이드 로드
+    # config/roles/${ROLE}.conf 파일이 있으면 default.conf 위에 덮어씌웁니다.
+    # 파일 안에 적힌 값만 바뀌고, 나머지는 default.conf 값을 그대로 씁니다.
+    if [[ "$ROLE" != "default" ]]; then
+        local role_conf="${SCRIPT_DIR}/config/roles/${ROLE}.conf"
+        if [[ -f "$role_conf" ]]; then
+            source "$role_conf"
+            log_info "역할별 설정 적용: config/roles/${ROLE}.conf"
+        else
+            log_warn "역할(${ROLE})에 해당하는 설정 파일 없음 → default 임계치 사용"
+            log_warn "새 역할을 추가하려면: config/roles/${ROLE}.conf 파일을 생성하세요"
+        fi
     fi
 }
 
@@ -75,7 +90,7 @@ _parse_args() {
             --fix)         FIX_MODE=true; shift ;;
             --json)        JSON_MODE=true; shift ;;
             --dry-run)     DRY_RUN=true; shift ;;
-            --role)        ROLE="$2"; shift 2 ;;
+            --role)        ROLE="$2"; ROLE_EXPLICIT=true; shift 2 ;;
             --targets)     TARGET_FILE="$2"; shift 2 ;;
             --config)      CONFIG_FILE="$2"; _load_config; shift 2 ;;  # 즉시 재로드
             -h|--help)     _usage; exit 0 ;;
@@ -120,6 +135,64 @@ Exit Code:
   sudo ./health-check.sh run --fix
   sudo ./health-check.sh run --fix --dry-run
 EOF
+}
+
+
+# ────────────────────────────────────────────────────────────
+# _detect_role: 역할 자동 감지 (--role 미지정 시 호출)
+#
+# 감지 우선순위:
+#   1. /etc/health-check.role 파일 — 운영자가 서버에 직접 설정
+#   2. 실행 중인 프로세스 — 단일 프로세스만 신뢰 (복수 감지 시 default)
+#   3. default — 감지 불가 또는 샌드박스 환경
+# ────────────────────────────────────────────────────────────
+_detect_role() {
+    local role_file="/etc/health-check.role"
+
+    # 1. /etc/health-check.role 파일 우선
+    if [[ -f "$role_file" ]]; then
+        local file_role
+        file_role=$(tr -d '[:space:]' < "$role_file")
+        if [[ -f "${SCRIPT_DIR}/config/roles/${file_role}.conf" ]]; then
+            log_info "역할 자동 감지 (/etc/health-check.role): ${file_role}"
+            ROLE="$file_role"
+            return
+        else
+            log_warn "/etc/health-check.role 값(${file_role})에 해당하는 설정 파일 없음 → 프로세스 감지 시도"
+        fi
+    fi
+
+    # 2. 실행 중인 프로세스로 감지
+    # 복수의 역할 프로세스가 감지되면 샌드박스로 판단하고 default 사용
+    local detected=""
+
+    if pgrep -x "mysqld|postgres|mongod|mongos|mariadb" > /dev/null 2>&1; then
+        detected="db"
+    fi
+    if pgrep -x "redis-server|memcached" > /dev/null 2>&1; then
+        [[ -n "$detected" ]] && { log_info "복합 역할 감지 (DB+Cache) → default 사용"; ROLE="default"; return; }
+        detected="cache"
+    fi
+    if pgrep -x "nginx|apache2|httpd" > /dev/null 2>&1; then
+        [[ -n "$detected" ]] && { log_info "복합 역할 감지 (${detected}+web) → default 사용"; ROLE="default"; return; }
+        detected="web"
+    fi
+    if pgrep -x "haproxy" > /dev/null 2>&1; then
+        [[ -n "$detected" ]] && { log_info "복합 역할 감지 (${detected}+proxy) → default 사용"; ROLE="default"; return; }
+        detected="proxy"
+    fi
+    if pgrep -x "jenkins|gitlab-runner" > /dev/null 2>&1; then
+        [[ -n "$detected" ]] && { log_info "복합 역할 감지 (${detected}+ci) → default 사용"; ROLE="default"; return; }
+        detected="ci"
+    fi
+
+    if [[ -n "$detected" ]]; then
+        log_info "역할 자동 감지 (프로세스): ${detected}"
+        ROLE="$detected"
+    else
+        log_info "역할 감지 불가 → default 사용 (샌드박스/복합 서버는 --role 또는 /etc/health-check.role로 지정)"
+        ROLE="default"
+    fi
 }
 
 
@@ -219,6 +292,8 @@ _run_targets() {
 # ════════════════════════════════════════════════════════════
 main() {
     _parse_args "$@"
+    # --role 미지정 시 자동 감지: 파일 → 프로세스 → default 순
+    [[ "$ROLE_EXPLICIT" == false ]] && _detect_role
     _load_config
     bootstrap    # 권한 체크 → Lock 획득 → trap 등록 (lib/bootstrap.sh)
 
